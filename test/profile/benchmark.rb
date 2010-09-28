@@ -1,51 +1,15 @@
 
-HERE = File.dirname(__FILE__)
-$LOAD_PATH << "#{HERE}/../../lib/"
-UNIX_SOCKET_NAME = File.join(ENV['TMPDIR']||'/tmp','memcached') 
+HERE = File.expand_path('..', __FILE__)
+$LOAD_PATH << File.expand_path('../../lib', HERE) << File.expand_path('..', HERE)
+UNIX_SOCKET_NAME = File.join(ENV['TMPDIR']||'/tmp','memcached')
 
-require 'memcached'
 require 'benchmark'
 require 'rubygems'
 require 'ruby-debug' if ENV['DEBUG']
 begin; require 'memory'; rescue LoadError; end
 
 puts `uname -a`
-puts "Ruby #{RUBY_VERSION}p#{RUBY_PATCHLEVEL}"
-
-[ ["memcached", "memcached"], 
-  ["remix-stash", "remix/stash"], 
-  # ["astro-remcached", "remcached"], # Clobbers the "Memcached" constant
-  ["memcache-client", "memcache"],
-  ["dalli","dalli"]].each do |gem_name, requirement|
-  require requirement
-  gem gem_name
-  puts "Loaded #{gem_name} #{Gem.loaded_specs[gem_name].version.to_s rescue nil}"
-end
-
-class Remix::Stash
-  # Remix::Stash API doesn't let you set servers
-  @@clusters = {:default => Remix::Stash::Cluster.new(['127.0.0.1:43042', '127.0.0.1:43043'])}
-end
-
-class Dalli::ClientCompat < Dalli::Client
-  def set(*args)
-    super(*args[0..2])
-  end
-  def get(*args)
-    super(args.first)
-  end
-  def get_multi(*args)
-    super(args.first)
-  end
-  def append(*args)
-    super
-  rescue Dalli::DalliError
-  end
-  def prepend(*args)
-    super
-  rescue Dalli::DalliError
-  end  
-end
+puts "#{RUBY_ENGINE} #{RUBY_VERSION}p#{RUBY_PATCHLEVEL}"
 
 class Bench
 
@@ -90,27 +54,63 @@ class Bench
     system("ruby #{HERE}/../setup.rb")
     sleep(1)
   end
-  
+
+  def try_load(*loaders)
+    loaders.each do |loader|
+      begin
+        loader.call
+      rescue Exception => e
+        puts e.to_s
+      end
+    end
+  end
+
   def reset_clients
-    @clients = {
-       "libm:ascii" => Memcached::Rails.new(
-         ['127.0.0.1:43042', '127.0.0.1:43043'],
-         :buffer_requests => false, :no_block => false, :namespace => "namespace"),
-       "libm:ascii:pipeline" => Memcached::Rails.new(
-         ['127.0.0.1:43042', '127.0.0.1:43043'],
-         :no_block => true, :buffer_requests => true, :noreply => true, :namespace => "namespace"),
-       "libm:ascii:udp" => Memcached::Rails.new(
-         ["#{UNIX_SOCKET_NAME}0", "#{UNIX_SOCKET_NAME}1"],
-         :buffer_requests => false, :no_block => false, :namespace => "namespace"),
-       "libm:bin" => Memcached::Rails.new(
-         ['127.0.0.1:43042', '127.0.0.1:43043'],
-         :buffer_requests => false, :no_block => false, :namespace => "namespace", :binary_protocol => true),
-       "libm:bin:buffer" => Memcached::Rails.new(
-         ['127.0.0.1:43042', '127.0.0.1:43043'],
-         :no_block => true, :buffer_requests => true, :namespace => "namespace", :binary_protocol => true),
-       "mclient:ascii" => MemCache.new(['127.0.0.1:43042', '127.0.0.1:43043']),
-       "stash:bin" => Remix::Stash.new(:root),
-       "dalli:bin" => Dalli::ClientCompat.new(['127.0.0.1:43042', '127.0.0.1:43043'], :marshal => false, :threadsafe => false)}
+    @clients = {}
+    loaders =  [lambda do
+                  require 'memcached'
+                  @clients.update({
+                   "libm:ascii" => Memcached::Rails.new(
+                     ['127.0.0.1:43042', '127.0.0.1:43043'],
+                     :buffer_requests => false, :no_block => false, :namespace => "namespace"),
+                   "libm:ascii:pipeline" => Memcached::Rails.new(
+                     ['127.0.0.1:43042', '127.0.0.1:43043'],
+                     :no_block => true, :buffer_requests => true, :noreply => true, :namespace => "namespace"),
+                   "libm:ascii:udp" => Memcached::Rails.new(
+                     ["#{UNIX_SOCKET_NAME}0", "#{UNIX_SOCKET_NAME}1"],
+                     :buffer_requests => false, :no_block => false, :namespace => "namespace"),
+                   "libm:bin" => Memcached::Rails.new(
+                     ['127.0.0.1:43042', '127.0.0.1:43043'],
+                     :buffer_requests => false, :no_block => false, :namespace => "namespace", :binary_protocol => true),
+                   "libm:bin:buffer" => Memcached::Rails.new(
+                     ['127.0.0.1:43042', '127.0.0.1:43043'],
+                     :no_block => true, :buffer_requests => true, :namespace => "namespace", :binary_protocol => true)
+                  })
+                end,
+                lambda do
+                  require 'remix_compat'
+                  Remix::Stash.set_clusters({:default => Remix::Stash::Cluster.new(['127.0.0.1:43042', '127.0.0.1:43043'])})
+                end,
+                lambda do
+                  gem 'jruby-memcache-client'
+                  require 'memcache'
+                  @clients.update({"jmclient:ascii" => MemCache.new(['127.0.0.1:43042', '127.0.0.1:43043'])})
+                end,
+                lambda do
+                  require 'spy_compat'
+                  @clients.update({"spym" => Spymemcached::ClientCompat.new(['127.0.0.1:43042', '127.0.0.1:43043'])})
+                end,
+                lambda do
+                  return if defined?(::MemCache)
+                  require 'memcache'
+                  @clients.update({"mclient:ascii" => MemCache.new(['127.0.0.1:43042', '127.0.0.1:43043'])})
+                end,
+                lambda do
+                  require 'dalli_compat'
+                  @clients.update({"dalli:bin" => Dalli::ClientCompat.new(['127.0.0.1:43042', '127.0.0.1:43043'], :marshal => false, :threadsafe => false)})
+                end
+               ]
+    try_load(*loaders)
   end
   
   
@@ -122,7 +122,7 @@ class Bench
         yield client
         @benchmark.report("#{test_name}: #{client_name}") { @loops.times { yield client } }
       rescue => e
-        # puts "#{test_name}:#{client_name} => #{e.inspect}"
+        puts "#{test_name}:#{client_name} => #{e.inspect}"
         # reset_clients
       end
     end
@@ -210,7 +210,7 @@ class Bench
       Rlibmemcached.memcached_generate_hash_rvalue(@k4, i)
       Rlibmemcached.memcached_generate_hash_rvalue(@k5, i)
       Rlibmemcached.memcached_generate_hash_rvalue(@k6, i)    
-    end
+    end if defined?(Memcached::HASH_VALUES)
   end
 end
 
