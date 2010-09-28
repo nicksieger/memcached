@@ -97,8 +97,8 @@ class Bench
                   @clients.update({"jmclient:ascii" => MemCache.new(['127.0.0.1:43042', '127.0.0.1:43043'])})
                 end,
                 lambda do
-                  require 'spy_compat'
-                  @clients.update({"spym" => Spymemcached::ClientCompat.new(['127.0.0.1:43042', '127.0.0.1:43043'])})
+                  require 'spymemcached'
+                  @clients.update({"spymemcached" => Spymemcached.new(['127.0.0.1:43042', '127.0.0.1:43043'])})
                 end,
                 lambda do
                   return if defined?(::MemCache)
@@ -108,6 +108,13 @@ class Bench
                 lambda do
                   require 'dalli_compat'
                   @clients.update({"dalli:bin" => Dalli::ClientCompat.new(['127.0.0.1:43042', '127.0.0.1:43043'], :marshal => false, :threadsafe => false)})
+                end,
+                lambda do
+                  require 'active_support/cache'
+                  require 'active_support/cache/ehcache_store'
+                  require 'ascache_compat'
+                  # Not a memcached client, but makes for an interesting comparison
+                  @clients.update({"ehcache" => ActiveSupport::CacheStoreClient.new(ActiveSupport::Cache::EhcacheStore.new)})
                 end
                ]
     try_load(*loaders)
